@@ -1,3 +1,24 @@
+<#
+This tool and associated scripts are provided for informational and assessment purposes only and do not represent an official Microsoft product or supported solution.
+
+All outputs are generated based on available Azure metadata and configuration at the time of execution. As such:
+
+Results may not fully reflect actual application behavior, dependencies, or runtime resiliency.
+Certain edge cases, service-specific behaviors, or architectural nuances may not be captured.
+Azure services, features, and behaviors are subject to change over time.
+This tool does not replace architecture validation, resiliency testing, or design reviews.
+
+Customers are responsible for:
+
+Validating all findings
+Performing appropriate testing (including failover and recovery scenarios)
+Ensuring alignment with their specific requirements, policies, and risk posture
+No warranties, guarantees, or support obligations are provided with this tool.
+
+Script version : 2.18
+Script Last update : 27-03-2026
+##>
+
 #Requires -Modules Az.ResourceGraph,Az.Accounts,Az.Storage
 param (
     [Parameter(mandatory=$false)]
