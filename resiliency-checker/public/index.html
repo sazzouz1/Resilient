@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ADGE Resiliency Checker</title>
+  <link rel="stylesheet" href="/css/app.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <script defer src="/js/app.js" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">RC</div>
+      <div>
+        <div class="brand-name">Resiliency Checker</div>
+        <div class="brand-sub">ADGE — Azure Zone-Redundancy Assessment</div>
+      </div>
+    </div>
+    <nav id="nav" class="nav"></nav>
+    <div class="topbar-actions">
+      <label class="toggle" title="Filter to production workloads only (based on tag/subscription/RG name)">
+        <input type="checkbox" id="prodToggle" />
+        <span>Production only</span>
+      </label>
+      <span id="meta" class="meta"></span>
+      <button id="refreshBtn" class="btn ghost" title="Re-scan CSV files on disk">↻ Refresh</button>
+    </div>
+  </header>
+
+  <div id="prodBanner" class="prod-banner" hidden>
+    <b>⚠ Production-only view</b> — filtered based solely on <code>environment</code> tag, subscription name, or resource-group name.
+    Any resource without a clear <i>prod / dev / test / uat / staging</i> keyword is hidden.
+    <a href="#" id="prodBannerDismiss">Turn off</a>
+  </div>
+
+  <main id="view" class="view"></main>
+
+  <footer class="footer">
+    <span>Data source: <code id="dataRootFooter">loading…</code></span>
+    <span id="scoring-help">Score legend: <b class="tier-HIGH">HIGH</b> · <b class="tier-MEDIUM">MEDIUM</b> · <b class="tier-LOW">LOW</b> · <b class="tier-NA">N/A</b></span>
+  </footer>
+</body>
+</html>
