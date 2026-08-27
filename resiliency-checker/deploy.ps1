@@ -148,15 +148,46 @@ az network private-endpoint dns-zone-group create `
   --name "zg-sites" --private-dns-zone $DNS_SITE --zone-name sites
 
 # ============================================================
-#  9. Entra ID sign-in (Easy Auth)
+#  9. Entra ID sign-in (Easy Auth — Auth V2)
 # ============================================================
-# Registers the app and requires interactive sign-in for all requests.
-az webapp auth microsoft update `
-  --resource-group $RG --name $APP `
-  --client-id (az ad app create --display-name $APP --query appId -o tsv) `
-  --issuer "https://login.microsoftonline.com/$(az account show --query tenantId -o tsv)/v2.0"
-az webapp auth update -g $RG -n $APP `
-  --enabled true --action RequireAuthentication --redirect-provider azureactivedirectory
+# Reuse the existing app registration (create it only if missing) and set the
+# reply URL that Easy Auth needs for the sign-in redirect.
+$appId = az ad app list --display-name $APP --query "[0].appId" -o tsv
+if (-not $appId) { $appId = az ad app create --display-name $APP --query appId -o tsv }
+az ad app update --id $appId `
+  --web-redirect-uris "https://$APP.azurewebsites.net/.auth/login/aad/callback"
+$TENANT_ID = az account show --query tenantId -o tsv
+
+# Configure the full Auth V2 settings in one shot. Using `az webapp auth set`
+# writes configVersion=v2 and replaces any classic (v1) settings, which avoids
+# the "Cannot use auth v2 commands when the app is using auth v1" error you get
+# if you mix `az webapp auth microsoft update` with pre-existing v1 auth.
+# NOTE: `--action RequireAuthentication` is NOT a valid CLI value — the correct
+# unauthenticated action that forces sign-in is `RedirectToLoginPage`.
+$AUTH_JSON = @{
+  platform = @{ enabled = $true }
+  globalValidation = @{
+    requireAuthentication       = $true
+    unauthenticatedClientAction = "RedirectToLoginPage"
+    redirectToProvider          = "azureactivedirectory"
+  }
+  identityProviders = @{
+    azureActiveDirectory = @{
+      enabled = $true
+      registration = @{
+        clientId     = $appId
+        openIdIssuer = "https://login.microsoftonline.com/$TENANT_ID/v2.0"
+      }
+      validation = @{ allowedAudiences = @("api://$appId") }
+    }
+  }
+} | ConvertTo-Json -Depth 10
+$AUTH_JSON | Out-File -Encoding utf8 authv2.json
+az webapp auth set -g $RG -n $APP --body '@authv2.json'
+
+# If the app was already on classic (v1) auth and the command above is blocked,
+# disable v1 first, then re-run the `az webapp auth set` above:
+#   az webapp auth-classic update -g $RG -n $APP --enabled false
 
 # NOTE: restrict sign-in to the "$VIEWERGROUP" Entra group by assigning that
 # group to the app registration's Enterprise App (Users & groups) and setting

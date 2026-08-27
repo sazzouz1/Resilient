@@ -218,6 +218,50 @@ az webapp restart --name $APP --resource-group $RG
 
 Only assigned identities can reach the app; everyone else is blocked at sign-in.
 
+### 13a. Same thing via CLI (Auth V2)
+
+If you prefer the CLI over the portal, use **Auth V2**. Do **not** mix it with the
+classic (v1) `--action RequireAuthentication` flag — `RequireAuthentication` is not a
+valid CLI value (allowed: `RedirectToLoginPage`, `AllowAnonymous`, `Return401/404/403`),
+and v2 commands fail if the app still has v1 auth. Writing the full config with
+`az webapp auth set` avoids both problems (it sets configVersion=v2 and replaces v1):
+
+```powershell
+# Reuse the existing app registration + set the Easy Auth reply URL
+$appId = az ad app list --display-name $APP --query "[0].appId" -o tsv
+if (-not $appId) { $appId = az ad app create --display-name $APP --query appId -o tsv }
+az ad app update --id $appId `
+  --web-redirect-uris "https://$APP.azurewebsites.net/.auth/login/aad/callback"
+$TENANT_ID = az account show --query tenantId -o tsv
+
+$AUTH_JSON = @{
+  platform = @{ enabled = $true }
+  globalValidation = @{
+    requireAuthentication       = $true
+    unauthenticatedClientAction = "RedirectToLoginPage"
+    redirectToProvider          = "azureactivedirectory"
+  }
+  identityProviders = @{
+    azureActiveDirectory = @{
+      enabled = $true
+      registration = @{
+        clientId     = $appId
+        openIdIssuer = "https://login.microsoftonline.com/$TENANT_ID/v2.0"
+      }
+      validation = @{ allowedAudiences = @("api://$appId") }
+    }
+  }
+} | ConvertTo-Json -Depth 10
+$AUTH_JSON | Out-File -Encoding utf8 authv2.json
+az webapp auth set -g $RG -n $APP --body '@authv2.json'
+
+# If blocked because the app is still on classic (v1) auth, disable v1 then re-run:
+#   az webapp auth-classic update -g $RG -n $APP --enabled false
+```
+
+Group restriction is the same as the portal steps above (Enterprise App -> Assignment
+required = Yes -> assign `DGE-Resiliency-Viewers`).
+
 ## 14. Private endpoint for the WEB APP + block public inbound (LAST)
 
 > After this, Kudu/zip-deploy from the internet stops working. Only do it once the app is verified.
