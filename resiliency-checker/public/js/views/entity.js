@@ -1,7 +1,7 @@
 // Entity Deep Dive — pick one entity/tenant, see technical breakdown.
 import { api } from '../api.js';
-import { el, kpi, tierBadge, scoreBar, scoreTier, fmt, chartOpts, TIER_COLORS, modal, toast } from '../ui.js';
-import { exportEntity } from '../exportExcel.js';
+import { el, kpi, tierBadge, scoreBar, scoreTier, fmt, chartOpts, TIER_COLORS, modal, toast, multiSelect } from '../ui.js';
+import { exportEntity, promptExportOptions } from '../exportExcel.js';
 
 async function render(host, params = []) {
   const [entities, allSnapshots] = await Promise.all([
@@ -28,24 +28,55 @@ async function render(host, params = []) {
   }
   fillSnapshots(preselect);
 
-  select.addEventListener('change', () => {
+  // Subscription MULTI-select — filters the WHOLE page. Options depend on the
+  // selected entity + run and come from /api/facets.
+  const subMs = multiSelect({
+    options: [], selected: [], allLabel: 'All subscriptions', noun: 'subscriptions',
+    onClose: () => renderEntity(contentHost, select.value, snapshotSel.value, subMs.getValues(), shared),
+  });
+  let facetCache = null;
+  async function fillSubscriptions(entityId, runDate) {
+    let f = { subscriptions: [] };
+    try { f = await api.facets({ entity: entityId, ...(runDate ? { runDate } : {}) }); }
+    catch (e) { console.error('facets failed', e); }
+    facetCache = f;
+    const options = (f.subscriptions || []).map(s => ({
+      value: s.name,
+      label: `${s.name} (${(s.count ?? 0).toLocaleString()})`,
+    }));
+    subMs.setOptions(options, true); // keep still-valid selections across entity/run changes
+  }
+
+  // Shared state so the Export button can mirror the on-screen attention tiers.
+  const shared = { tiers: 'LOW,MEDIUM' };
+
+  select.addEventListener('change', async () => {
     fillSnapshots(select.value);
-    renderEntity(contentHost, select.value, snapshotSel.value);
+    await fillSubscriptions(select.value, snapshotSel.value);
+    renderEntity(contentHost, select.value, snapshotSel.value, subMs.getValues(), shared);
     location.hash = `#/entity/${encodeURIComponent(select.value)}`;
   });
-  snapshotSel.addEventListener('change', () => {
-    renderEntity(contentHost, select.value, snapshotSel.value);
+  snapshotSel.addEventListener('change', async () => {
+    await fillSubscriptions(select.value, snapshotSel.value);
+    renderEntity(contentHost, select.value, snapshotSel.value, subMs.getValues(), shared);
   });
 
-  const exportBtn = el('button', { class: 'btn', title: 'Export this entity as a 4-tab Excel workbook' }, '⬇ Export to Excel');
+  const exportBtn = el('button', { class: 'btn', title: 'Choose sheets & scope, then export an Excel workbook' }, '⬇ Export to Excel');
   exportBtn.addEventListener('click', async () => {
     const current = select.value;
     const label = entities.find(e => e.id === current)?.displayName || current;
+    const tierVal = shared.tiers; // '' => all tiers on screen
+    const opts = await promptExportOptions({
+      subscriptions: facetCache?.subscriptions || [],
+      currentSubscriptions: subMs.getValues(),
+      currentTiers: tierVal ? tierVal.split(',') : ['HIGH', 'MEDIUM', 'LOW', 'NA'],
+    });
+    if (!opts) return;
     const originalText = exportBtn.textContent;
     exportBtn.textContent = 'Building…';
     exportBtn.disabled = true;
     try {
-      await exportEntity(current, label, snapshotSel.value || null);
+      await exportEntity(current, label, snapshotSel.value || null, opts);
     } catch (err) {
       alert(`Export failed: ${err.message}`);
       console.error(err);
@@ -61,6 +92,7 @@ async function render(host, params = []) {
     el('div', { class: 'toolbar' }, [
       el('label', {}, 'Entity:'), select,
       el('label', {}, 'Run:'), snapshotSel,
+      el('label', {}, 'Subscription:'), subMs.el,
       el('span', { class: 'spacer' }),
       exportBtn,
     ])
@@ -69,14 +101,17 @@ async function render(host, params = []) {
   const contentHost = el('div');
   host.append(contentHost);
 
-  await renderEntity(contentHost, preselect, snapshotSel.value);
+  await fillSubscriptions(preselect, snapshotSel.value);
+  await renderEntity(contentHost, preselect, snapshotSel.value, subMs.getValues(), shared);
 }
 
-async function renderEntity(host, entityId, runDate) {
+async function renderEntity(host, entityId, runDate, subs = [], shared = { tiers: 'LOW,MEDIUM' }) {
   host.innerHTML = '';
   if (!entityId) { host.append(el('div', { class: 'panel' }, 'No entity selected.')); return; }
+  const subParam = (subs && subs.length) ? subs.join(',') : '';
   const q = { entity: entityId };
   if (runDate) q.runDate = runDate;
+  if (subParam) q.subscription = subParam;
 
   const [summary, byType, byLocation, byConfig, byEnv] = await Promise.all([
     api.summary(q),
@@ -190,7 +225,7 @@ async function renderEntity(host, entityId, runDate) {
     el('option', { value: '' }, 'All resource types'),
     ...byType.slice(0, 40).map(t => el('option', { value: t.name }, `${t.name.replace(/^Microsoft\./, '')} (${fmt.n(t.count)})`)),
   ]);
-  tierFilter.addEventListener('change', () => refreshAttention());
+  tierFilter.addEventListener('change', () => { shared.tiers = tierFilter.value; refreshAttention(); });
   typeFilter.addEventListener('change', () => refreshAttention());
 
   const CLUSTER_TIER = { GOOD: 'HIGH', PARTIAL: 'MEDIUM', BAD: 'LOW', MISSING: 'LOW', STANDALONE: 'NA' };
@@ -201,7 +236,7 @@ async function renderEntity(host, entityId, runDate) {
 
     // Server accepts a single tier — pull each in parallel and merge
     const chunks = await Promise.all(tiers.map(t =>
-      api.resources({ entity: entityId, ...(runDate ? { runDate } : {}), tier: t, resourceType: typeFilter.value, pageSize: 500 })
+      api.resources({ entity: entityId, ...(runDate ? { runDate } : {}), ...(subParam ? { subscription: subParam } : {}), tier: t, resourceType: typeFilter.value, pageSize: 500 })
     ));
     const merged = chunks.flatMap(c => c.rows);
     const total = chunks.reduce((a, c) => a + c.total, 0);

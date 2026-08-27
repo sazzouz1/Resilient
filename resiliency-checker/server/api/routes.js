@@ -30,7 +30,11 @@ function applyFilters(rows, q = {}) {
     if (q.resourceType && r.resourcesubtype !== q.resourceType) return false;
     if (q.location && r.location !== q.location) return false;
     if (q.environment && (r.environment || 'N/A') !== q.environment) return false;
-    if (q.subscription && r.subscription !== q.subscription) return false;
+    if (q.subscription) {
+      // Accept one or many (comma-separated) subscriptions. '(blank)' matches empty.
+      const subs = String(q.subscription).split(',').map(s => s.trim()).filter(Boolean);
+      if (subs.length && !subs.includes(r.subscription || '(blank)')) return false;
+    }
     if (q.resourceGroup && (r.resourcegroup || '').toLowerCase() !== q.resourceGroup.toLowerCase()) return false;
     if (q.prodClass && r.__prodClass !== q.prodClass) return false;
     if (q.search) {

@@ -92,6 +92,7 @@ function detectClusters(rows) {
       resiliencyconfig: v.resiliencyconfig,
       resiliencydetail: v.resiliencydetail,
       sku: v.skuname,
+      subscription: v.subscription,
     });
   }
 

@@ -1,7 +1,7 @@
 // Resource Explorer — free-form slicing across all entities.
 // Includes a column chooser so users can toggle which fields are visible.
 import { api } from '../api.js';
-import { el, tierBadge, fmt } from '../ui.js';
+import { el, tierBadge, fmt, multiSelect } from '../ui.js';
 
 // -------- Column registry ----------------------------------------------------
 // Each column: { key, label, default, render(row) -> DOM node or string }
@@ -86,7 +86,7 @@ function saveColPrefs(prefs) { localStorage.setItem(COL_PREFS_KEY, JSON.stringif
 // -------- View state ---------------------------------------------------------
 const state = {
   entity: '', resourceType: '', location: '', environment: '', tier: '', search: '',
-  prodClass: '', page: 0, pageSize: 200, cols: loadColPrefs(),
+  prodClass: '', subscription: [], page: 0, pageSize: 200, cols: loadColPrefs(),
 };
 
 async function render(host, params = []) {
@@ -103,26 +103,12 @@ async function render(host, params = []) {
   const resultsPanel = el('div');
   host.append(resultsPanel);
 
-  const [entitiesList, facets] = await Promise.all([api.entities(), api.facets()]);
-
-  function makeSelect(placeholder, options, current) {
-    return el('select', {}, [
-      el('option', { value: '' }, placeholder),
-      ...options.map(o => el('option', {
-        value: o.value,
-        ...(o.value === current ? { selected: 'true' } : {}),
-      }, `${o.label} (${fmt.n(o.count)})`)),
-    ]);
-  }
-
-  const entitySel = makeSelect('All Entities',
-    entitiesList.map(e => ({ value: e.id, label: e.displayName, count: e.total })), state.entity);
-  const typeSel = makeSelect('All Resource Types',
-    facets.resourceTypes.map(x => ({ value: x.name, label: x.name.replace(/^Microsoft\./, ''), count: x.count })), state.resourceType);
-  const locSel = makeSelect('All Locations',
-    facets.locations.map(x => ({ value: x.name, label: x.name || '(blank)', count: x.count })), state.location);
-  const envSel = makeSelect('All Environments',
-    facets.environments.map(x => ({ value: x.name, label: x.name || '(blank)', count: x.count })), state.environment);
+  // Controls are created empty; their options are (re)populated by
+  // updateFacetOptions() so every filter narrows the others (cascading facets).
+  const entitySel = el('select', {});
+  const typeSel = el('select', {});
+  const locSel = el('select', {});
+  const envSel = el('select', {});
   const tierSel = el('select', {}, [
     el('option', { value: '' }, 'All Tiers'),
     ...['HIGH', 'MEDIUM', 'LOW', 'NA'].map(t => el('option', { value: t, ...(t === state.tier ? { selected: 'true' } : {}) }, t)),
@@ -134,6 +120,29 @@ async function render(host, params = []) {
   ]);
   const searchInput = el('input', { type: 'text', placeholder: 'Search name / RG / app…', value: state.search });
 
+  // Subscription MULTI-select (empty = all subscriptions)
+  const subMs = multiSelect({
+    options: [],
+    selected: state.subscription,
+    allLabel: 'All Subscriptions',
+    noun: 'subscriptions',
+    onClose: () => { state.subscription = subMs.getValues(); applyFilterChange(); },
+  });
+
+  // Repopulate a native <select>, preserving the current value even if it now
+  // has 0 matches under the other filters (so the user can still clear it).
+  function fillSelect(sel, placeholder, options, currentVal) {
+    sel.innerHTML = '';
+    sel.append(el('option', { value: '' }, placeholder));
+    const seen = new Set();
+    for (const o of options) {
+      sel.append(el('option', { value: o.value }, `${o.label} (${fmt.n(o.count)})`));
+      seen.add(o.value);
+    }
+    if (currentVal && !seen.has(currentVal)) sel.append(el('option', { value: currentVal }, `${currentVal} (0)`));
+    sel.value = currentVal || '';
+  }
+
   const colBtn = el('button', { class: 'btn ghost' }, 'Columns ▾');
   const colPanel = el('div', { class: 'col-panel', hidden: 'true' });
   for (const c of COLUMNS) {
@@ -141,7 +150,7 @@ async function render(host, params = []) {
     cb.addEventListener('change', () => {
       state.cols[c.key] = cb.checked;
       saveColPrefs(state.cols);
-      refresh();
+      renderResults();
     });
     colPanel.append(el('label', {}, [cb, ' ', c.label]));
   }
@@ -158,6 +167,7 @@ async function render(host, params = []) {
     el('label', {}, 'Type'), typeSel,
     el('label', {}, 'Location'), locSel,
     el('label', {}, 'Env'), envSel,
+    el('label', {}, 'Subscription'), subMs.el,
     el('label', {}, 'Tier'), tierSel,
     el('label', {}, 'Prod'), prodClassSel,
     searchInput,
@@ -165,10 +175,12 @@ async function render(host, params = []) {
       class: 'btn ghost',
       onclick: () => {
         state.entity = state.resourceType = state.location = state.environment = state.tier = state.prodClass = state.search = '';
+        state.subscription = [];
         state.page = 0;
         entitySel.value = typeSel.value = locSel.value = envSel.value = tierSel.value = prodClassSel.value = '';
         searchInput.value = '';
-        refresh();
+        subMs.setValues([]);
+        applyFilterChange();
       },
     }, 'Reset'),
     el('span', { class: 'spacer' }),
@@ -181,10 +193,11 @@ async function render(host, params = []) {
       entity: state.entity, resourceType: state.resourceType, location: state.location,
       environment: state.environment, tier: state.tier, search: state.search,
       prodClass: state.prodClass,
+      ...(state.subscription.length ? { subscription: state.subscription.join(',') } : {}),
     };
   }
 
-  async function refresh() {
+  function syncStateFromControls() {
     state.entity = entitySel.value;
     state.resourceType = typeSel.value;
     state.location = locSel.value;
@@ -192,7 +205,35 @@ async function render(host, params = []) {
     state.tier = tierSel.value;
     state.prodClass = prodClassSel.value;
     state.search = searchInput.value.trim();
+    // subscription is maintained by the multi-select's onClose handler
+  }
 
+  const omitKey = (obj, key) => { const o = { ...obj }; delete o[key]; return o; };
+
+  // Cascading facets: each filter's option list is computed from ALL the OTHER
+  // active filters (its own value is excluded so it never collapses to one option).
+  async function updateFacetOptions() {
+    const base = currentFilters();
+    const [ents, fType, fLoc, fEnv, fSub] = await Promise.all([
+      api.entities(omitKey(base, 'entity')),
+      api.facets(omitKey(base, 'resourceType')),
+      api.facets(omitKey(base, 'location')),
+      api.facets(omitKey(base, 'environment')),
+      api.facets(omitKey(base, 'subscription')),
+    ]);
+    fillSelect(entitySel, 'All Entities',
+      ents.map(e => ({ value: e.id, label: e.displayName, count: e.total })), state.entity);
+    fillSelect(typeSel, 'All Resource Types',
+      fType.resourceTypes.map(x => ({ value: x.name, label: x.name.replace(/^Microsoft\./, ''), count: x.count })), state.resourceType);
+    fillSelect(locSel, 'All Locations',
+      fLoc.locations.map(x => ({ value: x.name, label: x.name || '(blank)', count: x.count })), state.location);
+    fillSelect(envSel, 'All Environments',
+      fEnv.environments.map(x => ({ value: x.name, label: x.name || '(blank)', count: x.count })), state.environment);
+    subMs.setOptions(
+      (fSub.subscriptions || []).map(x => ({ value: x.name, label: `${x.name || '(blank)'} (${fmt.n(x.count)})` })), true);
+  }
+
+  async function renderResults() {
     resultsPanel.innerHTML = '';
     const [summary, pageData] = await Promise.all([
       api.summary(currentFilters()),
@@ -244,45 +285,60 @@ async function render(host, params = []) {
     resultsPanel.append(el('div', { class: 'toolbar', style: { marginTop: '10px' } }, [
       el('button', {
         class: 'btn ghost',
-        onclick: () => { if (state.page > 0) { state.page--; refresh(); } },
+        onclick: () => { if (state.page > 0) { state.page--; renderResults(); } },
       }, '‹ Prev'),
       el('span', { class: 'muted' }, `Page ${state.page + 1} / ${totalPages}`),
       el('button', {
         class: 'btn ghost',
-        onclick: () => { if (state.page + 1 < totalPages) { state.page++; refresh(); } },
+        onclick: () => { if (state.page + 1 < totalPages) { state.page++; renderResults(); } },
       }, 'Next ›'),
     ]));
+  }
+
+  // Any filter change: sync state, reset paging, recompute cascading options, re-query.
+  async function applyFilterChange() {
+    syncStateFromControls();
+    state.page = 0;
+    await updateFacetOptions();
+    await renderResults();
   }
 
   async function exportCsv() {
     const data = await api.resources({ ...currentFilters(), page: 0, pageSize: 100000 });
     const activeCols = COLUMNS.filter(c => state.cols[c.key]);
-    const header = activeCols.map(c => c.label).join(',');
+    const PLACEHOLDER = '\u2014'; // em-dash used on screen to mark a blank cell
     const cellText = (r, c) => {
       const val = c.render(r);
-      if (val instanceof Node) return val.textContent;
-      return val == null ? '' : String(val);
+      let s = (val instanceof Node) ? val.textContent : (val == null ? '' : String(val));
+      if (s.trim() === PLACEHOLDER) s = ''; // export UI blank markers as truly empty
+      return s;
     };
+    // RFC 4180 quoting: only quote when needed, and double any embedded quotes.
+    const csvCell = (s) => (/[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
+    const header = activeCols.map(c => csvCell(c.label)).join(',');
     const csv = [header].concat(
-      data.rows.map(r => activeCols.map(c => JSON.stringify(cellText(r, c))).join(','))
-    ).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+      data.rows.map(r => activeCols.map(c => csvCell(cellText(r, c))).join(','))
+    ).join('\r\n');
+    // Prepend a UTF-8 BOM so Excel decodes unicode correctly (fixes the "â€"" glitch).
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `resiliency-explorer-${Date.now()}.csv`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   for (const s of [entitySel, typeSel, locSel, envSel, tierSel, prodClassSel]) {
-    s.addEventListener('change', () => { state.page = 0; refresh(); });
+    s.addEventListener('change', () => { applyFilterChange(); });
   }
   let searchDebounce = 0;
   searchInput.addEventListener('input', () => {
     clearTimeout(searchDebounce);
-    searchDebounce = setTimeout(() => { state.page = 0; refresh(); }, 200);
+    searchDebounce = setTimeout(() => applyFilterChange(), 250);
   });
 
-  refresh();
+  await updateFacetOptions();
+  await renderResults();
 }
 
 export default { render };

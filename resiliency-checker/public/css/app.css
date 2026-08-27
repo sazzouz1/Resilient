@@ -80,6 +80,32 @@ input[type="text"], select {
 }
 input[type="text"]:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
+/* ---------- Multi-select dropdown ---------- */
+.multi-select { position: relative; display: inline-block; }
+.ms-btn {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  padding: 7px 10px; border-radius: 8px; font-size: 13px; min-width: 170px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 10px; justify-content: space-between;
+}
+.ms-btn:hover { border-color: var(--accent); }
+.ms-btn .ms-caret { color: var(--muted); font-size: 10px; }
+.ms-panel {
+  position: absolute; left: 0; top: 100%; margin-top: 6px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px; box-shadow: var(--shadow); min-width: 260px; max-height: 340px;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+}
+.ms-panel[hidden] { display: none; }
+.ms-search { width: 100%; box-sizing: border-box; }
+.ms-actions { display: flex; gap: 14px; padding: 0 2px 6px; border-bottom: 1px solid var(--border); }
+.ms-link { color: var(--accent-2); font-size: 12px; cursor: pointer; }
+.ms-link:hover { text-decoration: underline; }
+.ms-list { display: flex; flex-direction: column; }
+.ms-list label { display: flex; align-items: center; gap: 6px; padding: 3px 2px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.ms-list label:hover { color: var(--accent-2); }
+.multi-select input[type="checkbox"] { accent-color: var(--accent); width: auto; }
+.ms-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
+
 /* ---------- View shell ---------- */
 .view { padding: 20px; max-width: 1600px; margin: 0 auto; }
 .view h2 { margin: 0 0 6px; font-weight: 600; }

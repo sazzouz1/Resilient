@@ -10,7 +10,7 @@
 // Charts are Chart.js PNGs generated in a hidden <canvas> then embedded.
 
 import { api } from './api.js';
-import { TIER_COLORS } from './ui.js';
+import { TIER_COLORS, el, multiSelect } from './ui.js';
 
 const TIER_ORDER = ['HIGH', 'MEDIUM', 'LOW', 'NA'];
 const GROUP_TIER = { GOOD: 'HIGH', PARTIAL: 'MEDIUM', BAD: 'LOW', MISSING: 'LOW', STANDALONE: 'NA' };
@@ -87,11 +87,26 @@ const TIER_TEXT = {
 };
 
 // -------- Main exporter ------------------------------------------------------
-async function exportEntity(entityId, displayName, runDate = null) {
+async function exportEntity(entityId, displayName, runDate = null, options = {}) {
   needsExcelJs();
+
+  const tabs = {
+    overview: true, attention: true, vmGroups: true, progress: true, methodology: true,
+    ...(options.tabs || {}),
+  };
+  const wantTiers = (options.tiers && options.tiers.length) ? options.tiers : ['LOW', 'MEDIUM'];
+
+  // Subscription scope may be a single string or an array of subscriptions.
+  const subsArr = Array.isArray(options.subscription)
+    ? options.subscription
+    : (options.subscription ? [options.subscription] : []);
+  const subLabel = subsArr.length
+    ? (subsArr.length <= 2 ? subsArr.join(', ') : `${subsArr.length} subscriptions`)
+    : '';
 
   const q = { entity: entityId };
   if (runDate) q.runDate = runDate;
+  if (subsArr.length) q.subscription = subsArr.join(',');
 
   const [summary, resources, clusters, byType, byLoc, byConfig, byRg, progress] = await Promise.all([
     api.summary(q),
@@ -109,8 +124,8 @@ async function exportEntity(entityId, displayName, runDate = null) {
     || (progress.series[progress.series.length - 1]?.runDate)
     || null;
 
-  // ---- Render the three charts to PNGs in parallel --------------------------
-  const [tierChartPng, typeChartPng, configChartPng] = await Promise.all([
+  // ---- Render the three charts to PNGs in parallel (only when Overview kept) -
+  const [tierChartPng, typeChartPng, configChartPng] = tabs.overview ? await Promise.all([
     // 1) Doughnut of tier distribution
     renderChartPng({
       type: 'doughnut',
@@ -182,7 +197,7 @@ async function exportEntity(entityId, displayName, runDate = null) {
       },
       width: 1100, height: Math.max(400, byConfig.length * 40),
     }),
-  ]);
+  ]) : [null, null, null];
 
   // ---- Build the workbook ---------------------------------------------------
   const wb = new ExcelJS.Workbook();
@@ -190,6 +205,7 @@ async function exportEntity(entityId, displayName, runDate = null) {
   wb.created = new Date();
 
   // ============ Tab 1: Overview ============
+  if (tabs.overview) {
   const ov = wb.addWorksheet('Overview', { views: [{ showGridLines: false }] });
   ov.columns = [
     { width: 42 }, { width: 18 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 12 },
@@ -284,15 +300,19 @@ async function exportEntity(entityId, displayName, runDate = null) {
   // Note: no explicit frozen view — Excel treats { ySplit: 0, xSplit: 0 } as
   // corrupted and issues a repair on open. The showGridLines toggle stays via
   // the constructor.
+  } // end Overview tab
 
-  // ============ Tab 2: Attention (LOW + MEDIUM) ============
+  // ============ Tab 2: Attention ============
+  if (tabs.attention) {
   const att = wb.addWorksheet('Attention', { views: [{ state: 'frozen', ySplit: 4 }] });
   const attentionRows = resources.rows
-    .filter(r => r.tier === 'LOW' || r.tier === 'MEDIUM')
+    .filter(r => wantTiers.includes(r.tier))
     .sort((a, b) => (a.score ?? 999) - (b.score ?? 999));
 
-  const lowCount = attentionRows.filter(r => r.tier === 'LOW').length;
-  const medCount = attentionRows.filter(r => r.tier === 'MEDIUM').length;
+  const tierBreakdown = ['HIGH', 'MEDIUM', 'LOW', 'NA']
+    .filter(t => wantTiers.includes(t))
+    .map(t => `${t}: ${attentionRows.filter(r => r.tier === t).length}`)
+    .join(', ');
 
   att.columns = [
     { width: 28 }, { width: 22 }, { width: 30 }, { width: 12 }, { width: 10 }, { width: 20 },
@@ -300,7 +320,8 @@ async function exportEntity(entityId, displayName, runDate = null) {
     { width: 22 }, { width: 14 }, { width: 20 }, { width: 14 }, { width: 24 }, { width: 60 },
   ];
   h1(att.getCell('A1'), `Resources Requiring Attention — ${displayName}`);
-  att.getCell('A2').value = `${attentionRows.length} rows — LOW: ${lowCount}, MEDIUM: ${medCount}`;
+  att.getCell('A2').value = `${attentionRows.length} rows — ${tierBreakdown}`
+    + (subLabel ? `  ·  Subscription: ${subLabel}` : '');
   att.getCell('A2').font = { italic: true, color: { argb: 'FF666666' } };
 
   const attHeader = [
@@ -349,12 +370,14 @@ async function exportEntity(entityId, displayName, runDate = null) {
     }
   });
   att.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4 + attentionRows.length, column: attHeader.length } };
+  } // end Attention tab
 
   // ============ Tab 3: VM Groups ============
+  if (tabs.vmGroups) {
   const cl = wb.addWorksheet('VM Groups', { views: [{ state: 'frozen', ySplit: 4 }] });
   cl.columns = [
     { width: 10 }, { width: 34 }, { width: 26 }, { width: 34 }, { width: 8 },
-    { width: 14 }, { width: 28 }, { width: 8 }, { width: 20 }, { width: 22 }, { width: 32 },
+    { width: 14 }, { width: 28 }, { width: 30 }, { width: 8 }, { width: 20 }, { width: 22 }, { width: 32 },
   ];
   h1(cl.getCell('A1'), `VM Groups — ${displayName}`);
   cl.getCell('A2').value = `${clusters.stats.total} groups — GOOD ${clusters.stats.GOOD} · PARTIAL ${clusters.stats.PARTIAL} · BAD ${clusters.stats.BAD} · MISSING ${clusters.stats.MISSING}`;
@@ -362,7 +385,7 @@ async function exportEntity(entityId, displayName, runDate = null) {
   cl.getCell('A3').value = 'Note: "VM Group" = VMs that share a role stem (e.g. vm-app01/02/03). Not related to Azure clusters (AKS, HDInsight, VMSS).';
   cl.getCell('A3').font = { italic: true, color: { argb: 'FF666666' }, size: 10 };
   const clHeader = ['Status', 'Verdict', 'Group Stem (role)', 'Resource Group', 'Member Count',
-    'Zones Covered', 'Member Name', 'Zone(s)', 'SKU', 'resiliencyconfig', 'resiliencydetail'];
+    'Zones Covered', 'Member Name', 'Subscription', 'Zone(s)', 'SKU', 'resiliencyconfig', 'resiliencydetail'];
   const clHeaderRow = cl.getRow(4);
   clHeaderRow.values = clHeader;
   headerRow(clHeaderRow);
@@ -380,6 +403,7 @@ async function exportEntity(entityId, displayName, runDate = null) {
         i === 0 ? c.memberCount : '',
         i === 0 ? (c.zonesCovered.join(', ') || '—') : '',
         m.name || '',
+        m.subscription || '',
         m.zones || '',
         m.sku || '',
         m.resiliencyconfig || '',
@@ -392,14 +416,21 @@ async function exportEntity(entityId, displayName, runDate = null) {
       }
     }
   }
+  } // end VM Groups tab
 
   // ============ Tab 4 (optional): Progress ============
-  if (progress.series && progress.series.length >= 2) {
+  if (tabs.progress && progress.series && progress.series.length >= 2) {
     await buildProgressSheet(wb, displayName, progress);
   }
 
   // ============ Tab 5: Methodology & Actions ============
-  buildMethodologySheet(wb, displayName);
+  if (tabs.methodology) buildMethodologySheet(wb, displayName);
+
+  // Excel requires at least one worksheet — guard against an all-unchecked export.
+  if (wb.worksheets.length === 0) {
+    const s = wb.addWorksheet('Export');
+    s.getCell('A1').value = `No sheets were selected for ${displayName}.`;
+  }
 
   // ---- Save ---------------------------------------------------------------
   const buf = await wb.xlsx.writeBuffer();
@@ -417,7 +448,85 @@ async function exportEntity(entityId, displayName, runDate = null) {
   }
 }
 
-export { exportEntity };
+export { exportEntity, promptExportOptions };
+
+// -------- Pre-export options dialog -----------------------------------------
+// Lets the user pick which sheets to include, which tiers land on the Attention
+// sheet, and which subscription scope to export. Resolves to an options object
+// { tabs, tiers, subscription } or null if cancelled.
+function promptExportOptions({ subscriptions = [], currentSubscriptions = [], currentTiers = ['LOW', 'MEDIUM'] } = {}) {
+  return new Promise(resolve => {
+    const overlay = el('div', { class: 'modal-overlay' });
+    const box = el('div', { class: 'modal' });
+    box.append(el('h3', {}, 'Export to Excel — options'));
+    box.append(el('p', { class: 'muted' }, 'Choose what to include. The workbook reflects the current page filters (subscription, run, production-only).'));
+
+    const rowStyle = { display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'normal', margin: '2px 0' };
+    const groupStyle = { display: 'flex', flexWrap: 'wrap', gap: '4px 18px', margin: '4px 0 12px' };
+    const mkCheck = (label, checked) => {
+      const input = el('input', { type: 'checkbox' });
+      input.checked = !!checked;
+      const wrap = el('label', { style: rowStyle }, [input, el('span', {}, label)]);
+      return { wrap, input };
+    };
+
+    // Sheets to include
+    box.append(el('div', { class: 'modal-label' }, 'Sheets to include'));
+    const cOverview  = mkCheck('Overview (KPIs + charts)', true);
+    const cAttention = mkCheck('Attention (resources needing action)', true);
+    const cVm        = mkCheck('VM Groups', true);
+    const cProgress  = mkCheck('Progress (if multiple runs)', true);
+    const cMethod    = mkCheck('Methodology', true);
+    box.append(el('div', { style: groupStyle }, [cOverview.wrap, cAttention.wrap, cVm.wrap, cProgress.wrap, cMethod.wrap]));
+
+    // Attention tiers
+    box.append(el('div', { class: 'modal-label' }, 'Attention sheet — tiers'));
+    const tHigh = mkCheck('HIGH', currentTiers.includes('HIGH'));
+    const tMed  = mkCheck('MEDIUM', currentTiers.includes('MEDIUM'));
+    const tLow  = mkCheck('LOW', currentTiers.includes('LOW'));
+    const tNa   = mkCheck('N/A', currentTiers.includes('NA'));
+    box.append(el('div', { style: groupStyle }, [tHigh.wrap, tMed.wrap, tLow.wrap, tNa.wrap]));
+
+    // Subscription scope — multi-select (empty = all subscriptions)
+    box.append(el('div', { class: 'modal-label' }, 'Subscription scope'));
+    const subMs = multiSelect({
+      options: subscriptions.map(s => ({ value: s.name, label: `${s.name} (${(s.count ?? 0).toLocaleString()})` })),
+      selected: currentSubscriptions,
+      allLabel: 'All subscriptions',
+      noun: 'subscriptions',
+    });
+    box.append(subMs.el);
+
+    const err = el('div', { class: 'modal-err' });
+    const cancelBtn = el('button', { class: 'btn ghost' }, 'Cancel');
+    const okBtn = el('button', { class: 'btn' }, 'Export');
+    box.append(err, el('div', { class: 'modal-actions' }, [cancelBtn, okBtn]));
+    overlay.append(box);
+    document.body.append(overlay);
+
+    function close(v) { overlay.remove(); resolve(v); }
+    cancelBtn.addEventListener('click', () => close(null));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+    okBtn.addEventListener('click', () => {
+      const tabs = {
+        overview: cOverview.input.checked,
+        attention: cAttention.input.checked,
+        vmGroups: cVm.input.checked,
+        progress: cProgress.input.checked,
+        methodology: cMethod.input.checked,
+      };
+      if (!Object.values(tabs).some(Boolean)) { err.textContent = 'Select at least one sheet.'; return; }
+      const tiers = [
+        tHigh.input.checked && 'HIGH',
+        tMed.input.checked && 'MEDIUM',
+        tLow.input.checked && 'LOW',
+        tNa.input.checked && 'NA',
+      ].filter(Boolean);
+      if (tabs.attention && !tiers.length) { err.textContent = 'Pick at least one tier for the Attention sheet.'; return; }
+      close({ tabs, tiers, subscription: subMs.getValues() });
+    });
+  });
+}
 
 // -------- Progress tab -----------------------------------------------------
 async function buildProgressSheet(wb, displayName, progress) {
